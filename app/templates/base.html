@@ -17,6 +17,9 @@
     <div><dt>版本</dt><dd>{{ version_old }} → {{ version_label }}</dd></div>
     <div><dt>生成</dt><dd>{{ generated_at }}</dd></div>
     <div><dt>规则集</dt><dd>{{ ruleset }}</dd></div>
+    {% if evidence and evidence.mode %}
+    <div><dt>取证</dt><dd>{% if evidence.mode == 'as_of' %}{{ evidence.as_of[:10] }} 起生效{% elif evidence.mode == 'pinned' %}原批次{% elif evidence.mode == 'effective_now' %}此刻生效{% else %}最新提交{% endif %}</dd></div>
+    {% endif %}
   </dl>
   <nav class="toc" aria-label="页面">
     {% for item in nav %}

@@ -46,9 +46,16 @@ CODES: dict[str, tuple[str, str]] = {
     # 版本与批次
     "VERSION_STALE": ("基于旧版本提交", "break"),
     "VERSION_OVERLAP": ("生效区间与已有版本重叠", "warn"),
+    "VERSION_ERRATUM": ("同一生效区间的勘误替代", "info"),
     "VERSION_APPLIED": ("版本已登记", "info"),
     "RUN_REUSED": ("同一输入命中已算批次", "info"),
     "WINDOW_INVERTED": ("生效区间起点不早于终点", "break"),
+    # 取证与发布
+    "EVIDENCE_AS_OF": ("按取证日期选出生效版本", "info"),
+    "EVIDENCE_PINNED": ("按原批次复取证据", "info"),
+    "PUBLISH_REPLAYED": ("发布键命中，重试不重复发布", "info"),
+    "PUBLISH_KEY_REUSED": ("发布键被用于另一组输入", "break"),
+    "NO_EFFECTIVE_VERSION": ("该日期没有生效版本", "break"),
     # 结论
     "COMPATIBLE": ("兼容", "info"),
     "COMPATIBLE_BY_MAPPING": ("加别名后兼容", "warn"),

@@ -3,17 +3,40 @@
 {% block body %}
 <section class="doc-section">
   <h1>迁移单</h1>
-  <p class="lede">条款 <span class="mono">{{ clauses|length }}</span>　破坏 <span class="mono">{{ ledger.counts.breaking or 0 }}</span>　断链 <span class="mono">{{ ledger.counts.refs_broken or 0 }}</span></p>
-  <div class="actions">
-    <a class="btn" href="/api/export/spec.md">迁移单 MD</a>
-    <a class="btn ghost" href="/api/export/fields.csv">字段账 CSV</a>
-    <a class="btn ghost" href="/api/export/refs.csv">引用账 CSV</a>
-    <a class="btn ghost" href="/api/export/ledger.csv">账目 CSV</a>
-    <a class="btn ghost" href="/api/export/manifest.json">运行清单</a>
-  </div>
+  <p class="lede">条款 <span class="mono">{{ clauses|length }}</span>　破坏 <span class="mono">{{ (ledger.get('counts') or {}).get('breaking', 0) }}</span>　断链 <span class="mono">{{ (ledger.get('counts') or {}).get('refs_broken', 0) }}</span></p>
+
+  <form class="pair" method="get" action="/spec">
+    <div>
+      <label for="as-of">取证日期</label>
+      <input type="date" id="as-of" name="as_of" value="{{ evidence.as_of[:10] if evidence.as_of else '' }}">
+    </div>
+    <div>
+      <label for="run-pin">原批次</label>
+      <input type="text" id="run-pin" name="run_id" value="{{ evidence.run_id if evidence.mode == 'pinned' else '' }}" placeholder="fm-…" autocomplete="off">
+    </div>
+    <button type="submit">取证</button>
+    <span class="lede">
+      {% if evidence.mode == 'as_of' %}按日期 {{ evidence.as_of[:10] }} 取生效版本
+      {% elif evidence.mode == 'pinned' %}按原批次复取，勘误不影响
+      {% elif evidence.mode == 'effective_now' %}按此刻生效版本取证
+      {% else %}最新提交{% endif %}
+    </span>
+  </form>
 
   {% if empty %}
-  <p class="empty">还没有批次。</p>
+  <p class="empty">该取证口径下没有批次。</p>
+  {% else %}
+  <p class="lede">批次 <span class="mono">{{ run.run_id }}</span>　版本 <span class="mono">{{ run.version_label_old }} → {{ run.version_label_new }}</span>　生效 {{ run.effective_from[:10] }} 起</p>
+  <div class="actions">
+    <a class="btn" href="/api/export/spec.md?run_id={{ run.run_id }}">迁移单 MD</a>
+    <a class="btn ghost" href="/api/export/fields.csv?run_id={{ run.run_id }}">字段账 CSV</a>
+    <a class="btn ghost" href="/api/export/refs.csv?run_id={{ run.run_id }}">引用账 CSV</a>
+    <a class="btn ghost" href="/api/export/ledger.csv?run_id={{ run.run_id }}">账目 CSV</a>
+    <a class="btn ghost" href="/api/export/manifest.json?run_id={{ run.run_id }}">运行清单</a>
+  </div>
+  {% endif %}
+
+  {% if empty %}
   {% elif clauses %}
   {% for item in clauses %}
   <article class="spec-clause">

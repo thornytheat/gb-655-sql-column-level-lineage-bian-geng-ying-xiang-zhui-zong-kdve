@@ -25,7 +25,11 @@ def summary_of(run: dict) -> dict:
         "consumers": counts.get("consumers", 0),
         "balanced": bool(balanced.get("all")),
         "reused": bool(run.get("reused")),
+        "replayed": bool(run.get("replayed")),
+        "publish_key": run.get("publish_key"),
         "warnings": len(run.get("warnings") or []),
+        "erratum": any(item.get("code") == "VERSION_ERRATUM"
+                       for item in (run.get("warnings") or [])),
     }
 
 

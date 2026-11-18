@@ -26,7 +26,11 @@ def check_stale(base_version_seq, current_seq: int) -> None:
 
 
 def overlap_warnings(target: dict, existing: list[dict]) -> list[dict]:
-    hits = window_mod.find_overlaps(target, existing)
+    """部分重叠才告警；同一区间的后发布批次算勘误，单独提示。"""
+    hits = [
+        hit for hit in window_mod.find_overlaps(target, existing)
+        if not _same_window(target, hit)
+    ]
     return [
         {
             "code": "VERSION_OVERLAP",
@@ -35,3 +39,28 @@ def overlap_warnings(target: dict, existing: list[dict]) -> list[dict]:
         }
         for hit in hits
     ]
+
+
+def _same_window(target: dict, other: dict) -> bool:
+    return (other.get("from") == target["from"]
+            and other.get("to") == target["to"])
+
+
+def erratum_warnings(target: dict, existing: list[dict]) -> list[dict]:
+    """同一生效区间已发布过版本：新批次是勘误，后发布的版本对取证生效。
+
+    旧批次不被覆盖，仍可按 run_id 复取；这里只提示取证口径会切换。
+    """
+    same = [
+        item for item in existing
+        if item["effective_from"] == target["from"]
+        and item.get("effective_to") == target["to"]
+    ]
+    if not same:
+        return []
+    superseded = sorted(item["run_id"] for item in same)
+    return [{
+        "code": "VERSION_ERRATUM",
+        "detail": "同一生效区间的勘误，取证将取最新发布；旧批次仍可按 run_id 复取",
+        "supersedes": superseded,
+    }]

@@ -81,9 +81,10 @@ templates.env.filters["day"] = _day
 templates.env.filters["via"] = _via
 
 
-def shell_context(active: str) -> dict:
-    run = store.latest_run()
+def shell_context(active: str, run_override: dict | None = None) -> dict:
+    run = run_override if run_override is not None else store.latest_run()
     created = (run or {}).get("created_at")
+    evidence = (run or {}).get("_evidence") or {}
     return {
         "active": active,
         "nav": NAV,
@@ -95,6 +96,7 @@ def shell_context(active: str) -> dict:
         "tz_label": "+08:00",
         "window_semantics": config.WINDOW_SEMANTICS,
         "run": run,
+        "evidence": evidence,
     }
 
 
@@ -108,7 +110,7 @@ def render(request: Request, template: str, active: str, **extra) -> HTMLRespons
 def page_or_404(request: Request, template: str, active: str, run: dict | None,
                 **extra) -> HTMLResponse:
     """没有批次时给出空态，页面仍返回 200。"""
-    context = shell_context(active)
+    context = shell_context(active, run_override=run)
     context["request"] = request
     context["empty"] = run is None
     context.update(extra)

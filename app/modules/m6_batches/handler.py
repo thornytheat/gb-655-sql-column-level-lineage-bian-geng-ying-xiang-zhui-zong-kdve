@@ -6,13 +6,13 @@ from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 
 from app import errors, store, web
-from app.modules.m6_batches import history, service
+from app.modules.m6_batches import evidence, history, service
 
 router = APIRouter()
 
 ALLOWED_KEYS = {
     "old_file", "new_file", "refs_file", "base_file", "base_version_seq",
-    "effective_from", "effective_to", "params",
+    "effective_from", "effective_to", "params", "publish_key",
 }
 
 
@@ -44,6 +44,13 @@ def create_run(payload: dict | None = None):
     if len(params) > 12:
         raise errors.BadInput("params 最多 12 项", detail={"count": len(params)})
 
+    publish_key = body.get("publish_key")
+    if publish_key not in (None, ""):
+        if not isinstance(publish_key, str) or len(publish_key) > 128:
+            raise errors.BadInput("publish_key 必须是不超过 128 字的字符串",
+                                  detail={"field": "publish_key"})
+        publish_key = publish_key.strip() or None
+
     run = service.execute(
         old_file=str(body.get("old_file") or "schema_v2026_06.sql"),
         new_file=str(body.get("new_file") or "schema_v2026_09.sql"),
@@ -53,10 +60,13 @@ def create_run(payload: dict | None = None):
         effective_from=body.get("effective_from"),
         effective_to=body.get("effective_to"),
         params=params,
+        publish_key=publish_key,
     )
     return {
         "run_id": run["run_id"],
         "reused": bool(run.get("reused")),
+        "replayed": bool(run.get("replayed")),
+        "publish_key": publish_key,
         "version_seq": run["version_seq"],
         "counts": (run.get("ledger") or {}).get("counts") or {},
         "balanced": (run.get("ledger") or {}).get("balanced") or {},
@@ -74,8 +84,10 @@ def batches_api():
 
 
 @router.get("/api/reconcile")
-def reconcile_api():
-    run = store.latest_run()
-    if not run:
-        raise errors.NotFound("还没有批次，先在版本历史页跑一次")
-    return history.reconcile(run)
+def reconcile_api(as_of: str | None = None, run_id: str | None = None,
+                  latest: bool = False):
+    """对账与取证同一口径：默认按此刻生效的版本，保证账目和导出对得上。"""
+    run = evidence.resolve(as_of=as_of, run_id=run_id, latest=latest)
+    payload = history.reconcile(run)
+    payload["run_id"] = run["run_id"]
+    return payload

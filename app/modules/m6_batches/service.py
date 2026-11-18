@@ -54,7 +54,8 @@ def _edges(old_snapshot: dict, new_snapshot: dict, diff: dict,
 def execute(old_file: str = config.DEFAULT_OLD, new_file: str = config.DEFAULT_NEW,
             refs_file: str = config.DEFAULT_REFS, base_file: str | None = config.BASE_OLD,
             base_version_seq=None, effective_from: str | None = None,
-            effective_to: str | None = None, params: dict | None = None) -> dict:
+            effective_to: str | None = None, params: dict | None = None,
+            publish_key: str | None = None) -> dict:
     params = dict(params or {})
     old_path = config.resolve_sample(old_file)
     new_path = config.resolve_sample(new_file)
@@ -87,8 +88,25 @@ def execute(old_file: str = config.DEFAULT_OLD, new_file: str = config.DEFAULT_N
     # 陈旧提交先拒：基线落后时，连复用都不该给
     guard.check_stale(base_version_seq, store.current_version_seq())
 
+    if publish_key:
+        known = store.find_publish_key(publish_key)
+        if known is not None:
+            if known["request_sha256"] != key:
+                raise errors.Conflict(
+                    "该发布键已用于另一组输入，未重复发布",
+                    detail={"reason": "PUBLISH_KEY_REUSED", "publish_key": publish_key,
+                            "run_id": known["run_id"]},
+                )
+            stored = store.run_by_id(known["run_id"])
+            if stored is not None:
+                return dict(stored, reused=True, replayed=True)
+
     existing = store.find_run_by_key(key)
     if existing is not None:
+        if publish_key:
+            # 同一输入用新发布键重试：把键钉到已有批次，不新增行
+            store.register_publish_key(publish_key, existing["run_id"], key,
+                                       config.now_utc().isoformat())
         reused = dict(existing)
         reused["reused"] = True
         return reused
@@ -102,7 +120,9 @@ def execute(old_file: str = config.DEFAULT_OLD, new_file: str = config.DEFAULT_N
     impact_payload = impact.build(diff, refs["consumers"], resolution)
     ledger = migration.build_ledger(diff, refs["consumers"], resolution)
 
-    warnings = guard.overlap_warnings(window, store.list_windows())
+    existing_runs = store.list_run_payloads()
+    warnings = (guard.overlap_warnings(window, store.list_windows())
+                + guard.erratum_warnings(window, existing_runs))
     created_at = config.now_utc().isoformat()
     input_sha = manifest_mod.sha256_bytes(
         "|".join(f"{role}:{digest}" for role, digest in sorted(digests.items())).encode()
@@ -111,11 +131,12 @@ def execute(old_file: str = config.DEFAULT_OLD, new_file: str = config.DEFAULT_N
     run = {
         "run_id": manifest_mod.run_id_for(key),
         "batch_key": key,
+        "publish_key": publish_key,
         "old_schema_id": old_snapshot["schema_id"],
         "new_schema_id": new_snapshot["schema_id"],
         "version_label_old": old_snapshot["version_label"],
         "version_label_new": new_snapshot["version_label"],
-        "version_seq": store.next_version_seq(),
+        "version_seq": None,
         "input_sha256": input_sha,
         "digests": digests,
         "input_names": names,
@@ -149,8 +170,22 @@ def execute(old_file: str = config.DEFAULT_OLD, new_file: str = config.DEFAULT_N
         "warnings": warnings,
         "reused": False,
     }
-    run["summary"] = history.summary_of(run)
-    store.save_run(run)
+    if publish_key:
+        published = store.publish_run(run, publish_key, key, history.summary_of)
+        if published["status"] == "conflict":
+            raise errors.Conflict(
+                "该发布键已用于另一组输入，未重复发布",
+                detail={"reason": "PUBLISH_KEY_REUSED", "publish_key": publish_key,
+                        "run_id": published["run_id"]},
+            )
+        stored = store.run_by_id(published["run_id"])
+        if published["status"] == "replayed":
+            replayed = dict(stored or run)
+            replayed["reused"] = True
+            replayed["replayed"] = True
+            return replayed
+        return dict(stored or run, replayed=False)
+    store.save_run(run, history.summary_of)
     return run
 
 

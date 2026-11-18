@@ -6,6 +6,7 @@
   <p class="lede">批次 <span class="mono">{{ runs|length }}</span>　当前序号 <span class="mono">{{ current_seq }}</span></p>
   <div class="actions">
     <button type="button" data-action="run">跑一次</button>
+    <button type="button" class="ghost" data-action="publish" data-publish-key="erratum-2026-09">发布（幂等键）</button>
     <button type="button" class="ghost" data-action="run" data-force-stale="1">陈旧提交</button>
     <a class="btn ghost" href="/api/reconcile">对账 JSON</a>
     <span class="flash" data-flash></span>
@@ -18,7 +19,7 @@
       <thead>
         <tr>
           <th>批次</th><th class="num">序号</th><th>版本</th><th>生效起</th>
-          <th class="num">字段</th><th class="num">破坏</th><th class="num">断链</th><th>账</th><th>生成</th>
+          <th class="num">字段</th><th class="num">破坏</th><th class="num">断链</th><th>账</th><th>标记</th><th>取证</th><th>生成</th>
         </tr>
       </thead>
       <tbody>
@@ -32,6 +33,8 @@
           <td class="num">{{ item.breaking }}</td>
           <td class="num">{{ item.refs_broken }}</td>
           <td>{% if item.balanced %}<span class="st st-ok">平</span>{% else %}<span class="st st-bad">不平</span>{% endif %}</td>
+          <td>{% if item.erratum %}<span class="st st-warn">勘误</span>{% elif item.reused %}<span class="st st-info">复算</span>{% else %}<span class="st st-none">新</span>{% endif %}</td>
+          <td><a class="mono" href="/spec?run_id={{ item.run_id }}">复取</a></td>
           <td class="name">{{ item.created_at|day }}</td>
         </tr>
         {% endfor %}

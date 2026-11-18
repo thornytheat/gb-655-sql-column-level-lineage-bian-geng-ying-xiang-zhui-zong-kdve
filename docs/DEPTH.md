@@ -1,6 +1,6 @@
 # 深度登记 lineageguard
 
-- 规模：中型（7 个功能模块，76 个文件，65 条测试）
+- 规模：中型（8 个功能模块，78 个文件，103 条测试）
 - 核心规则：SQL 别名源列先解析成列级边，依赖图通过环检测后再计算反向影响闭包。
 - 使用者与工作流：数仓开发在列改名或删除前，复核受影响的模型、任务与报表。
 
@@ -15,6 +15,7 @@
 | M5 影响面 | 解析列级边并查看下游影响、环、断链 | POST /api/lineage | `app/modules/m5_impact/handler.py` `app/modules/m5_impact/sql_lineage.py` `app/modules/m5_impact/closure.py` `app/modules/m5_impact/cycle.py` `app/modules/m5_impact/broken.py` | `tests/test_m5_impact.py` `tests/test_sql_lineage.py` |
 | M6 版本批次 | 跑批次、看历史、验陈旧拒绝与区间重叠 | POST /api/runs | `app/modules/m6_batches/handler.py` `app/modules/m6_batches/service.py` `app/modules/m6_batches/window.py` `app/modules/m6_batches/guard.py` `app/modules/m6_batches/history.py` | `tests/test_m6_batches.py` |
 | M7 迁移单 | 出带列级证据的单一迁移清单 | GET /api/export/evidence.csv | `app/modules/m7_migration/handler.py` `app/modules/m7_migration/service.py` `app/modules/m7_migration/csv_out.py` `app/modules/m7_migration/ledger.py` | `tests/test_m7_migration.py` |
+| M8 取证与发布 | 按日期取证、勘误替代、按批次复取、幂等发布 | GET /api/evidence | `app/modules/m6_batches/evidence.py` `app/modules/m6_batches/service.py` `app/store.py` | `tests/test_m8_evidence.py` |
 
 ## 陷阱登记
 
@@ -28,8 +29,11 @@
 | TRAP-20 | 下游依赖成环、节点指向自己 | 递归爆栈或静默截断 | 三色 DFS，自引用单列一类 | `app/modules/m5_impact/cycle.py` | `tests/test_m5_impact.py::test_trap20_cycle_and_self_loop` |
 | TRAP-21 | 上下游只登记一边 | 只查单向，另一半关系漏报 | 双向核验，缺边清单逐条列出 | `app/modules/m5_impact/broken.py` | `tests/test_m5_impact.py::test_trap21_one_sided_registration` |
 | TRAP-22 | 同一字段被连续改过两次名 | 只认最近一跳，最早的名字解析不到 | 跨版本改名链一路解析到底 | `app/modules/m4_mapping/rename.py` | `tests/test_m4_mapping.py::test_trap22_alias_chain_resolves_multi_hop` |
-| TRAP-25 | 两个版本生效区间重叠 | 取到哪版看运气 | 半开区间比较，重叠直接标记警告 | `app/modules/m6_batches/window.py` | `tests/test_m6_batches.py::test_trap25_overlap_flagged_but_adjacent_clean` |
+| TRAP-25 | 两个版本生效区间重叠 | 取到哪版看运气 | 半开区间比较，重叠直接标记警告；同一区间另算勘误 | `app/modules/m6_batches/window.py` `app/modules/m6_batches/guard.py` | `tests/test_m6_batches.py::test_trap25_overlap_flagged_but_adjacent_clean` |
 | TRAP-26 | 基于旧版本号提交 | 后提交无条件覆盖新结果 | 版本号乐观锁，基线落后即 409 | `app/modules/m6_batches/guard.py` | `tests/test_m6_batches.py::test_trap26_stale_submission_rejected` |
+| TRAP-27 | 提前登记下月版本 | 导出跟着最后提交走，本月证据被下一版顶掉 | 取证按日期选生效版本，`latest=1` 才是预览 | `app/modules/m6_batches/evidence.py` | `tests/test_m8_evidence.py::test_future_version_does_not_change_current_evidence` |
+| TRAP-28 | 同一生效区间勘误晚到 | 旧证据被覆盖，或新取证还看到旧结论 | 新取证取后发布的版本，旧批次按 `run_id` 复取不变 | `app/modules/m6_batches/evidence.py` | `tests/test_m8_evidence.py::test_erratum_same_window_takes_latest_for_new_evidence` `::test_issued_evidence_is_replayable_by_run_id` |
+| TRAP-29 | 发布失败后重试 | 重复发布出两条批次，或失败后库里只剩半截 | 发布键幂等，事务内分配序号与写批次，失败整体回滚 | `app/store.py` | `tests/test_m8_evidence.py::test_publish_retry_does_not_duplicate` `::test_publish_failure_keeps_old_evidence` |
 
 ## 对账规则
 
@@ -45,4 +49,5 @@
 - DDL 只解析 `CREATE TABLE` 的列定义，不处理分区、约束、索引与 `ALTER`。
 - 类型格只覆盖数值、字符、时间、布尔四族；映射表、数组、结构体一律算 `unknown`，保守判破坏。
 - 生效区间重叠只标记不阻断，最终以版本序号为准。
+- 取证只按批次的生效区间挑版本；批次内部的字段判定口径不受影响。
 - 打印页脚用 `counter(page)`，Chrome 打印预览不渲染该计数。

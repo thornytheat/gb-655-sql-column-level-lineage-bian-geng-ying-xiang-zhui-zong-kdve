@@ -11,7 +11,13 @@ const ACTIONS = {
     if (button.dataset.forceStale) {
       body.base_version_seq = 0;
     }
+    if (button.dataset.publishKey) {
+      body.publish_key = button.dataset.publishKey;
+      // 同一生效区间再发一版即勘误；重复点击靠发布键幂等
+      body.params = { wave: 'erratum' };
+    }
     const run = await request('/api/runs', body);
+    if (run.replayed) return `重试命中发布键，仍是批次 ${run.run_id} 序号 ${run.version_seq}`;
     return run.reused
       ? `命中已有批次 ${run.run_id}`
       : `新批次 ${run.run_id} 序号 ${run.version_seq}`;

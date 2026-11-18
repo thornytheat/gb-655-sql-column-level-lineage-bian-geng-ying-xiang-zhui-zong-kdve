@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from app import manifest as manifest_mod, store
+from app import manifest as manifest_mod
 from app.modules.m7_migration import csv_out, ledger, spec_md
 
 
@@ -42,13 +42,13 @@ def manifest_json_text(run: dict) -> str:
     payload["input_names"] = run.get("input_names") or {}
     payload["ledger"] = run.get("ledger") or {}
     payload["warnings"] = run.get("warnings") or []
+    payload["evidence"] = run.get("_evidence") or {"mode": "latest", "run_id": run.get("run_id"),
+                                                   "as_of": None}
     return csv_out.manifest_json(payload)
 
 
 def latest_or_404() -> dict:
-    run = store.latest_run()
-    if not run:
-        from app import errors
+    """默认取证：按此刻生效的版本，而非最后提交的版本。"""
+    from app.modules.m6_batches import evidence
 
-        raise errors.NotFound("还没有批次，先在版本历史页跑一次")
-    return run
+    return evidence.resolve()

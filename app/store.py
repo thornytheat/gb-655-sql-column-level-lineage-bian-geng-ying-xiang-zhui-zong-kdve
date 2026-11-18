@@ -56,6 +56,12 @@ CREATE TABLE IF NOT EXISTS kv (
     k TEXT PRIMARY KEY,
     v TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS publish_keys (
+    publish_key     TEXT PRIMARY KEY,
+    run_id          TEXT NOT NULL,
+    request_sha256  TEXT NOT NULL,
+    created_at      TEXT NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_quarantine_schema ON quarantine(schema_id);
 """
 
@@ -83,7 +89,7 @@ def reset() -> None:
     """测试与重建用：清空全部业务表。"""
     with _LOCK, _connect() as conn:
         conn.executescript(SCHEMA)
-        for table in ("snapshots", "runs", "quarantine", "kv"):
+        for table in ("snapshots", "runs", "quarantine", "kv", "publish_keys"):
             conn.execute(f"DELETE FROM {table}")
 
 
@@ -183,20 +189,116 @@ def list_quarantine(schema_id: str) -> list[dict]:
 
 # ---------- 运行清单 ----------
 
-def save_run(run: dict) -> None:
+def _insert_run(conn: sqlite3.Connection, run: dict) -> None:
+    conn.execute(
+        """INSERT INTO runs (run_id, batch_key, old_schema_id, new_schema_id, version_seq,
+               input_sha256, ruleset, created_at, effective_from, effective_to,
+               summary_json, payload_json)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            run["run_id"], run["batch_key"], run["old_schema_id"], run["new_schema_id"],
+            int(run["version_seq"]), run["input_sha256"], run["ruleset"],
+            run["created_at"], run["effective_from"], run["effective_to"],
+            _dumps(run["summary"]), _dumps(run),
+        ),
+    )
+
+
+def _allocate_seq(conn: sqlite3.Connection) -> int:
+    row = conn.execute("SELECT COALESCE(MAX(version_seq), 0) AS n FROM runs").fetchone()
+    return int(row["n"]) + 1
+
+
+def save_run(run: dict, summarize=None) -> None:
+    """写批次；序号与摘要都在锁内落定，避免摘要里记下空序号。
+
+    写锁用 BEGIN IMMEDIATE：先拿写锁再读 max，跨进程也不会撞号。
+    """
+    with _LOCK, _connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        if run.get("version_seq") in (None, ""):
+            run["version_seq"] = _allocate_seq(conn)
+        if summarize is not None:
+            run["summary"] = summarize(run)
+        _insert_run(conn, run)
+
+
+def list_run_payloads() -> list[dict]:
+    """全部批次的完整结果，按版本序号升序；取证按生效区间挑选时用。"""
+    with _LOCK, _connect() as conn:
+        rows = conn.execute(
+            "SELECT payload_json FROM runs ORDER BY version_seq, run_id"
+        ).fetchall()
+    return [_loads(row["payload_json"]) for row in rows]
+
+
+def find_publish_key(publish_key: str) -> dict | None:
+    with _LOCK, _connect() as conn:
+        row = conn.execute(
+            """SELECT publish_key, run_id, request_sha256, created_at
+               FROM publish_keys WHERE publish_key=?""",
+            (publish_key,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def register_publish_key(publish_key: str, run_id: str, request_sha256: str,
+                         created_at: str) -> None:
+    """把一个发布键钉到已有批次上；重复登记保持首次落库的那一条。"""
     with _LOCK, _connect() as conn:
         conn.execute(
-            """INSERT INTO runs (run_id, batch_key, old_schema_id, new_schema_id, version_seq,
-                   input_sha256, ruleset, created_at, effective_from, effective_to,
-                   summary_json, payload_json)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (
-                run["run_id"], run["batch_key"], run["old_schema_id"], run["new_schema_id"],
-                int(run["version_seq"]), run["input_sha256"], run["ruleset"],
-                run["created_at"], run["effective_from"], run["effective_to"],
-                _dumps(run["summary"]), _dumps(run),
-            ),
+            """INSERT OR IGNORE INTO publish_keys
+               (publish_key, run_id, request_sha256, created_at)
+               VALUES (?,?,?,?)""",
+            (publish_key, run_id, request_sha256, created_at),
         )
+
+
+def publish_run(run: dict, publish_key: str, request_sha256: str,
+                summarize=None) -> dict:
+    """原子发布：登记幂等键、分配序号、写批次，同一事务内完成。
+
+    三种结局：
+    - 发布键已登记且输入摘要相同：原样返回上次发布的批次（重试不重复发布）；
+    - 发布键已登记但输入摘要不同：返回冲突，调用方报 409，不允许顶掉已发证据；
+    - 新键：分配序号并入库，失败整体回滚。
+    同一批次键已存在（同一输入用另一个键发布）时只补登记键，不再新增批次。
+    """
+    with _LOCK, _connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        known = conn.execute(
+            "SELECT run_id, request_sha256 FROM publish_keys WHERE publish_key=?",
+            (publish_key,),
+        ).fetchone()
+        if known:
+            if known["request_sha256"] != request_sha256:
+                return {"status": "conflict", "run_id": known["run_id"],
+                        "published_sha256": known["request_sha256"]}
+            return {"status": "replayed", "run_id": known["run_id"]}
+
+        same_batch = conn.execute(
+            "SELECT run_id FROM runs WHERE batch_key=?", (run["batch_key"],)
+        ).fetchone()
+        if same_batch is not None:
+            conn.execute(
+                """INSERT INTO publish_keys
+                   (publish_key, run_id, request_sha256, created_at)
+                   VALUES (?,?,?,?)""",
+                (publish_key, same_batch["run_id"], request_sha256, run["created_at"]),
+            )
+            return {"status": "replayed", "run_id": same_batch["run_id"]}
+
+        run["version_seq"] = _allocate_seq(conn)
+        if summarize is not None:
+            run["summary"] = summarize(run)
+        _insert_run(conn, run)
+        conn.execute(
+            """INSERT INTO publish_keys (publish_key, run_id, request_sha256, created_at)
+               VALUES (?,?,?,?)""",
+            (publish_key, run["run_id"], request_sha256, run["created_at"]),
+        )
+        return {"status": "published", "run_id": run["run_id"],
+                "version_seq": run["version_seq"]}
 
 
 def find_run_by_key(batch_key: str) -> dict | None:
@@ -236,12 +338,6 @@ def count_runs() -> int:
     with _LOCK, _connect() as conn:
         row = conn.execute("SELECT COUNT(*) AS n FROM runs").fetchone()
     return int(row["n"])
-
-
-def next_version_seq() -> int:
-    with _LOCK, _connect() as conn:
-        row = conn.execute("SELECT COALESCE(MAX(version_seq), 0) AS n FROM runs").fetchone()
-    return int(row["n"]) + 1
 
 
 def current_version_seq() -> int:
